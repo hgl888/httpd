@@ -373,4 +373,10 @@ int h2_beam_was_received(h2_bucket_beam *beam);
 
 apr_size_t h2_beam_get_files_beamed(h2_bucket_beam *beam);
 
+typedef apr_bucket *h2_bucket_beamer(h2_bucket_beam *beam, 
+                                     apr_bucket_brigade *dest,
+                                     const apr_bucket *src);
+
+void h2_register_bucket_beamer(h2_bucket_beamer *beamer);
+
 #endif /* h2_bucket_beam_h */

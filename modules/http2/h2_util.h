@@ -160,7 +160,7 @@ int h2_iq_shift(h2_iqueue *q);
  * common helpers
  ******************************************************************************/
 /* h2_log2(n) iff n is a power of 2 */
-unsigned char h2_log2(apr_uint32_t n);
+unsigned char h2_log2(int n);
 
 /**
  * Count the bytes that all key/value pairs in a table have
@@ -191,18 +191,18 @@ const char *h2_util_first_token_match(apr_pool_t *pool, const char *s,
 int h2_req_ignore_header(const char *name, size_t len);
 int h2_req_ignore_trailer(const char *name, size_t len);
 int h2_res_ignore_trailer(const char *name, size_t len);
-int h2_proxy_res_ignore_header(const char *name, size_t len);
 
 /**
  * Set the push policy for the given request. Takes request headers into 
  * account, see draft https://tools.ietf.org/html/draft-ruellan-http-accept-push-policy-00
  * for details.
  * 
- * @param req the request to determine the policy for
+ * @param headers the http headers to inspect
  * @param p the pool to use
  * @param push_enabled if HTTP/2 server push is generally enabled for this request
+ * @return the push policy desired
  */
-void h2_push_policy_determine(struct h2_request *req, apr_pool_t *p, int push_enabled);
+int h2_push_policy_determine(apr_table_t *headers, apr_pool_t *p, int push_enabled);
 
 /*******************************************************************************
  * base64 url encoding, different table from normal base64
@@ -352,11 +352,12 @@ do { \
     const char *line = "(null)"; \
     apr_size_t len, bmax = sizeof(buffer)/sizeof(buffer[0]); \
     len = h2_util_bb_print(buffer, bmax, (tag), "", (bb)); \
-    ap_log_cerror(APLOG_MARK, level, 0, (c), "bb_dump(%ld-%d): %s", \
-        (c)->id, (int)(sid), (len? buffer : line)); \
+    ap_log_cerror(APLOG_MARK, level, 0, (c), "bb_dump(%s): %s", \
+        (c)->log_id, (len? buffer : line)); \
 } while(0)
 
 
+typedef int h2_bucket_gate(apr_bucket *b);
 /**
  * Transfer buckets from one brigade to another with a limit on the 
  * maximum amount of bytes transferred. Does no setaside magic, lifetime
@@ -369,7 +370,8 @@ do { \
 apr_status_t h2_append_brigade(apr_bucket_brigade *to,
                                apr_bucket_brigade *from, 
                                apr_off_t *plen,
-                               int *peos);
+                               int *peos,
+                               h2_bucket_gate *should_append);
 
 /**
  * Get an approximnation of the memory footprint of the given

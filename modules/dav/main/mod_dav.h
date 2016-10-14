@@ -546,14 +546,15 @@ typedef enum {
 
 /* Write a complete RESPONSE object out as a <DAV:response> xml
  * element.  Data is sent into brigade BB, which is auto-flushed into
- * OUTPUT filter stack.  Use POOL for any temporary allocations.
+ * the output filter stack for request R.  Use POOL for any temporary
+ * allocations.
  *
  * [Presumably the <multistatus> tag has already been written;  this
  * routine is shared by dav_send_multistatus and dav_stream_response.]
  */
 DAV_DECLARE(void) dav_send_one_response(dav_response *response,
                                         apr_bucket_brigade *bb,
-                                        ap_filter_t *output,
+                                        request_rec *r,
                                         apr_pool_t *pool);
 
 /* Factorized helper function: prep request_rec R for a multistatus
@@ -1933,8 +1934,8 @@ struct dav_hooks_repository
                                const dav_resource *resource);
 
     /*
-    ** The provider should deliver the resource into the specified filter.
-    ** Basically, this is the response to the GET method.
+    ** The provider should deliver the resource into the request's output
+    ** filter stack. Basically, this is the response to the GET method.
     **
     ** Note that this is called for all resources, including collections.
     ** The provider should determine what has content to deliver or not.
@@ -1944,6 +1945,15 @@ struct dav_hooks_repository
     **
     ** This may be NULL if handle_get is FALSE.
     ** ### maybe toss handle_get and just use this function as the marker
+    **
+    ** API ISSUE: don't use the passed-in 'output' filter.
+    **
+    ** Instead, generate the response into the output filter stack for the
+    ** request (r->output_filters). An implementation can use the request_rec
+    ** that was passed to get_resource() for this purpose. Using 'output'
+    ** filter for the response can cause unbounded memory usage.
+    **
+    ** See https://mail-archives.apache.org/mod_mbox/httpd-dev/201608.mbox/%3C20160822151917.GA22369%40redhat.com%3E
     */
     dav_error * (*deliver)(const dav_resource *resource,
                            ap_filter_t *output);
@@ -2295,6 +2305,15 @@ struct dav_hooks_vsn
     **
     ** ### maybe we need a way to signal an error anyways, and then
     ** ### apache can abort the connection?
+    **
+    ** API ISSUE: don't use the passed-in 'output' filter.
+    **
+    ** Instead, generate the response into the output filter stack for the
+    ** request (r->output_filters). An implementation can use the request_rec
+    ** that was passed to get_resource() for this purpose. Using 'output'
+    ** filter for the response can cause unbounded memory usage.
+    **
+    ** See https://mail-archives.apache.org/mod_mbox/httpd-dev/201608.mbox/%3C20160822151917.GA22369%40redhat.com%3E
     */
     dav_error * (*deliver_report)(request_rec *r,
                                   const dav_resource *resource,
@@ -2416,6 +2435,15 @@ struct dav_hooks_vsn
     **
     ** This hook is optional; if the provider does not support merging,
     ** then this should be set to NULL.
+    **
+    ** API ISSUE: don't use the passed-in 'output' filter.
+    **
+    ** Instead, generate the response into the output filter stack for the
+    ** request (r->output_filters). An implementation can use the request_rec
+    ** that was passed to get_resource() for this purpose. Using 'output'
+    ** filter for the response can cause unbounded memory usage.
+    **
+    ** See https://mail-archives.apache.org/mod_mbox/httpd-dev/201608.mbox/%3C20160822151917.GA22369%40redhat.com%3E
     */
     dav_error * (*merge)(dav_resource *target, dav_resource *source,
                          int no_auto_merge, int no_checkout,

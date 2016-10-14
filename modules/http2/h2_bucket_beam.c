@@ -21,6 +21,7 @@
 #include <apr_thread_cond.h>
 
 #include <httpd.h>
+#include <http_protocol.h>
 #include <http_log.h>
 
 #include "h2_private.h"
@@ -169,7 +170,36 @@ const apr_bucket_type_t h2_bucket_type_beam = {
 /*******************************************************************************
  * h2_blist, a brigade without allocations
  ******************************************************************************/
+
+static apr_array_header_t *beamers;
  
+void h2_register_bucket_beamer(h2_bucket_beamer *beamer)
+{
+    if (!beamers) {
+        beamers = apr_array_make(apr_hook_global_pool, 10, 
+                                 sizeof(h2_bucket_beamer*));
+    }
+    APR_ARRAY_PUSH(beamers, h2_bucket_beamer*) = beamer;
+}
+
+static apr_bucket *h2_beam_bucket(h2_bucket_beam *beam, 
+                                  apr_bucket_brigade *dest,
+                                  const apr_bucket *src)
+{
+    apr_bucket *b = NULL;
+    int i;
+    if (beamers) {
+        for (i = 0; i < beamers->nelts && b == NULL; ++i) {
+            h2_bucket_beamer *beamer;
+            
+            beamer = APR_ARRAY_IDX(beamers, i, h2_bucket_beamer*);
+            b = beamer(beam, dest, src);
+        }
+    }
+    return b;
+}
+
+
 apr_size_t h2_util_bl_print(char *buffer, apr_size_t bmax, 
                             const char *tag, const char *sep, 
                             h2_blist *bl)
@@ -245,9 +275,9 @@ static void report_production(h2_bucket_beam *beam, int force)
     }
 }
 
-static apr_off_t calc_buffered(h2_bucket_beam *beam)
+static apr_size_t calc_buffered(h2_bucket_beam *beam)
 {
-    apr_off_t len = 0;
+    apr_size_t len = 0;
     apr_bucket *b;
     for (b = H2_BLIST_FIRST(&beam->red); 
          b != H2_BLIST_SENTINEL(&beam->red);
@@ -296,7 +326,7 @@ static apr_status_t wait_cond(h2_bucket_beam *beam, apr_thread_mutex_t *lock)
 }
 
 static apr_status_t r_wait_space(h2_bucket_beam *beam, apr_read_type_e block,
-                                 h2_beam_lock *pbl, apr_off_t *premain) 
+                                 h2_beam_lock *pbl, apr_size_t *premain) 
 {
     *premain = calc_space_left(beam);
     while (!beam->aborted && *premain <= 0 
@@ -518,10 +548,12 @@ void h2_beam_abort(h2_bucket_beam *beam)
     h2_beam_lock bl;
     
     if (enter_yellow(beam, &bl) == APR_SUCCESS) {
-        r_purge_reds(beam);
-        h2_blist_cleanup(&beam->red);
-        beam->aborted = 1;
-        report_consumption(beam, 0);
+        if (!beam->aborted) {
+            beam->aborted = 1;
+            r_purge_reds(beam);
+            h2_blist_cleanup(&beam->red);
+            report_consumption(beam, 0);
+        }
         if (beam->m_cond) {
             apr_thread_cond_broadcast(beam->m_cond);
         }
@@ -585,7 +617,7 @@ static apr_status_t append_bucket(h2_bucket_beam *beam,
 {
     const char *data;
     apr_size_t len;
-    apr_off_t space_left = 0;
+    apr_size_t space_left = 0;
     apr_status_t status;
     
     if (APR_BUCKET_IS_METADATA(bred)) {
@@ -792,8 +824,10 @@ transfer:
                 else if (APR_BUCKET_IS_FLUSH(bred)) {
                     bgreen = apr_bucket_flush_create(bb->bucket_alloc);
                 }
-                else {
-                    /* put red into hold, no green sent out */
+                else if (AP_BUCKET_IS_ERROR(bred)) {
+                    ap_bucket_error *eb = (ap_bucket_error *)bred;
+                    bgreen = ap_bucket_error_create(eb->status, eb->data,
+                                                    bb->p, bb->bucket_alloc);
                 }
             }
             else if (APR_BUCKET_IS_FILE(bred)) {
@@ -845,6 +879,14 @@ transfer:
                 APR_BRIGADE_INSERT_TAIL(bb, bgreen);
                 remain -= bgreen->length;
                 ++transferred;
+            }
+            else {
+                bgreen = h2_beam_bucket(beam, bb, bred);
+                while (bgreen && bgreen != APR_BRIGADE_SENTINEL(bb)) {
+                    ++transferred;
+                    remain -= bgreen->length;
+                    bgreen = APR_BUCKET_NEXT(bgreen);
+                }
             }
         }
 
